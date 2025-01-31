@@ -17,8 +17,10 @@ import (
 	"fmt"
 
 	"github.com/k8sgpt-ai/k8sgpt/pkg/common"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/kubernetes"
 	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type NetworkPolicyAnalyzer struct{}
@@ -26,6 +28,14 @@ type NetworkPolicyAnalyzer struct{}
 func (NetworkPolicyAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 	kind := "NetworkPolicy"
+	apiDoc := kubernetes.K8sApiReference{
+		Kind: kind,
+		ApiVersion: schema.GroupVersion{
+			Group:   "networking",
+			Version: "v1",
+		},
+		OpenapiSchema: a.OpenapiSchema,
+	}
 
 	AnalyzerErrorsMetric.DeletePartialMatch(map[string]string{
 		"analyzer_name": kind,
@@ -33,7 +43,7 @@ func (NetworkPolicyAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error)
 
 	// get all network policies in the namespace
 	policies, err := a.Client.GetClient().NetworkingV1().
-		NetworkPolicies(a.Namespace).List(a.Context, metav1.ListOptions{})
+		NetworkPolicies(a.Namespace).List(a.Context, metav1.ListOptions{LabelSelector: a.LabelSelector})
 	if err != nil {
 		return nil, err
 	}
@@ -45,8 +55,11 @@ func (NetworkPolicyAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error)
 
 		// Check if policy allows traffic to all pods in the namespace
 		if len(policy.Spec.PodSelector.MatchLabels) == 0 {
+			doc := apiDoc.GetApiDocV2("spec.podSelector.matchLabels")
+
 			failures = append(failures, common.Failure{
-				Text: fmt.Sprintf("Network policy allows traffic to all pods: %s", policy.Name),
+				Text:          fmt.Sprintf("Network policy allows traffic to all pods: %s", policy.Name),
+				KubernetesDoc: doc,
 				Sensitive: []common.Sensitive{
 					{
 						Unmasked: policy.Name,
@@ -54,23 +67,23 @@ func (NetworkPolicyAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error)
 					},
 				},
 			})
-			continue
-		}
-		// Check if policy is not applied to any pods
-		podList, err := util.GetPodListByLabels(a.Client.GetClient(), a.Namespace, policy.Spec.PodSelector.MatchLabels)
-		if err != nil {
-			return nil, err
-		}
-		if len(podList.Items) == 0 {
-			failures = append(failures, common.Failure{
-				Text: fmt.Sprintf("Network policy is not applied to any pods: %s", policy.Name),
-				Sensitive: []common.Sensitive{
-					{
-						Unmasked: policy.Name,
-						Masked:   util.MaskString(policy.Name),
+		} else {
+			// Check if policy is not applied to any pods
+			podList, err := util.GetPodListByLabels(a.Client.GetClient(), a.Namespace, policy.Spec.PodSelector.MatchLabels)
+			if err != nil {
+				return nil, err
+			}
+			if len(podList.Items) == 0 {
+				failures = append(failures, common.Failure{
+					Text: fmt.Sprintf("Network policy is not applied to any pods: %s", policy.Name),
+					Sensitive: []common.Sensitive{
+						{
+							Unmasked: policy.Name,
+							Masked:   util.MaskString(policy.Name),
+						},
 					},
-				},
-			})
+				})
+			}
 		}
 
 		if len(failures) > 0 {

@@ -17,25 +17,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
 	"github.com/adrg/xdg"
-	"github.com/fatih/color"
-	"github.com/k8sgpt-ai/k8sgpt/cmd/serve"
-	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
 	"github.com/k8sgpt-ai/k8sgpt/cmd/analyze"
 	"github.com/k8sgpt-ai/k8sgpt/cmd/auth"
+	"github.com/k8sgpt-ai/k8sgpt/cmd/cache"
+	customanalyzer "github.com/k8sgpt-ai/k8sgpt/cmd/customAnalyzer"
+	"github.com/k8sgpt-ai/k8sgpt/cmd/dump"
 	"github.com/k8sgpt-ai/k8sgpt/cmd/filters"
 	"github.com/k8sgpt-ai/k8sgpt/cmd/generate"
 	"github.com/k8sgpt-ai/k8sgpt/cmd/integration"
+	"github.com/k8sgpt-ai/k8sgpt/cmd/serve"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"k8s.io/client-go/util/homedir"
 )
 
 var (
 	cfgFile     string
 	kubecontext string
 	kubeconfig  string
-	version     string
+	Version     string
+	Commit      string
+	Date        string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -50,8 +54,13 @@ var rootCmd = &cobra.Command{
 
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
-func Execute(v string) {
-	version = v
+func Execute(v string, c string, d string) {
+	Version = v
+	Commit = c
+	Date = d
+	viper.Set("Version", Version)
+	viper.Set("Commit", Commit)
+	viper.Set("Date", Date)
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)
@@ -63,19 +72,18 @@ func init() {
 
 	cobra.OnInitialize(initConfig)
 
-	var kubeconfigPath string
-	if home := homedir.HomeDir(); home != "" {
-		kubeconfigPath = filepath.Join(home, ".kube", "config")
-	}
 	rootCmd.AddCommand(auth.AuthCmd)
 	rootCmd.AddCommand(analyze.AnalyzeCmd)
+	rootCmd.AddCommand(dump.DumpCmd)
 	rootCmd.AddCommand(filters.FiltersCmd)
 	rootCmd.AddCommand(generate.GenerateCmd)
 	rootCmd.AddCommand(integration.IntegrationCmd)
 	rootCmd.AddCommand(serve.ServeCmd)
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.k8sgpt.yaml)")
+	rootCmd.AddCommand(cache.CacheCmd)
+	rootCmd.AddCommand(customanalyzer.CustomAnalyzerCmd)
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", fmt.Sprintf("Default config file (%s/k8sgpt/k8sgpt.yaml)", xdg.ConfigHome))
 	rootCmd.PersistentFlags().StringVar(&kubecontext, "kubecontext", "", "Kubernetes context to use. Only required if out-of-cluster.")
-	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", kubeconfigPath, "Path to a kubeconfig. Only required if out-of-cluster.")
+	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -91,7 +99,7 @@ func initConfig() {
 		viper.SetConfigType("yaml")
 		viper.SetConfigName("k8sgpt")
 
-		viper.SafeWriteConfig()
+		_ = viper.SafeWriteConfig()
 	}
 
 	viper.Set("kubecontext", kubecontext)
@@ -102,6 +110,7 @@ func initConfig() {
 
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
+		_ = 1
 		//	fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
 	}
 }
@@ -120,14 +129,7 @@ func performConfigMigrationIfNeeded() {
 	err = util.EnsureDirExists(configDir)
 	cobra.CheckErr(err)
 
-	if oldConfigExists && newConfigExists {
-		fmt.Fprintln(os.Stderr, color.RedString("Warning: Legacy config file at `%s` detected! This file will be ignored!", oldConfig))
-		return
-	}
-
 	if oldConfigExists && !newConfigExists {
-		fmt.Fprintln(os.Stderr, color.RedString("Performing config file migration from `%s` to `%s`", oldConfig, newConfig))
-
 		err = os.Rename(oldConfig, newConfig)
 		cobra.CheckErr(err)
 	}

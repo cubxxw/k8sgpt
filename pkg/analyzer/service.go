@@ -17,9 +17,13 @@ import (
 	"fmt"
 
 	"github.com/fatih/color"
-	"github.com/k8sgpt-ai/k8sgpt/pkg/common"
-	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
+
+	"github.com/k8sgpt-ai/k8sgpt/pkg/common"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/kubernetes"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type ServiceAnalyzer struct{}
@@ -27,13 +31,21 @@ type ServiceAnalyzer struct{}
 func (ServiceAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 	kind := "Service"
+	apiDoc := kubernetes.K8sApiReference{
+		Kind: kind,
+		ApiVersion: schema.GroupVersion{
+			Group:   "",
+			Version: "v1",
+		},
+		OpenapiSchema: a.OpenapiSchema,
+	}
 
 	AnalyzerErrorsMetric.DeletePartialMatch(map[string]string{
 		"analyzer_name": kind,
 	})
 
 	// search all namespaces for pods that are not running
-	list, err := a.Client.GetClient().CoreV1().Endpoints(a.Namespace).List(a.Context, metav1.ListOptions{})
+	list, err := a.Client.GetClient().CoreV1().Endpoints(a.Namespace).List(a.Context, metav1.ListOptions{LabelSelector: a.LabelSelector})
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +57,10 @@ func (ServiceAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 		// Check for empty service
 		if len(ep.Subsets) == 0 {
+			if _, ok := ep.Annotations[resourcelock.LeaderElectionRecordAnnotationKey]; ok {
+				continue
+			}
+
 			svc, err := a.Client.GetClient().CoreV1().Services(ep.Namespace).Get(a.Context, ep.Name, metav1.GetOptions{})
 			if err != nil {
 				color.Yellow("Service %s/%s does not exist", ep.Namespace, ep.Name)
@@ -52,8 +68,11 @@ func (ServiceAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 			}
 
 			for k, v := range svc.Spec.Selector {
+				doc := apiDoc.GetApiDocV2("spec.selector")
+
 				failures = append(failures, common.Failure{
-					Text: fmt.Sprintf("Service has no endpoints, expected label %s=%s", k, v),
+					Text:          fmt.Sprintf("Service has no endpoints, expected label %s=%s", k, v),
+					KubernetesDoc: doc,
 					Sensitive: []common.Sensitive{
 						{
 							Unmasked: k,
@@ -72,19 +91,42 @@ func (ServiceAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 			// Check through container status to check for crashes
 			for _, epSubset := range ep.Subsets {
+				apiDoc.Kind = "Endpoints"
+
 				if len(epSubset.NotReadyAddresses) > 0 {
 					for _, addresses := range epSubset.NotReadyAddresses {
 						count++
 						pods = append(pods, addresses.TargetRef.Kind+"/"+addresses.TargetRef.Name)
 					}
-					failures = append(failures, common.Failure{
-						Text:      fmt.Sprintf("Service has not ready endpoints, pods: %s, expected %d", pods, count),
-						Sensitive: []common.Sensitive{},
-					})
 				}
 			}
-		}
 
+			if count > 0 {
+				doc := apiDoc.GetApiDocV2("subsets.notReadyAddresses")
+
+				failures = append(failures, common.Failure{
+					Text:          fmt.Sprintf("Service has not ready endpoints, pods: %s, expected %d", pods, count),
+					KubernetesDoc: doc,
+					Sensitive:     []common.Sensitive{},
+				})
+			}
+		}
+		// fetch event
+		events, err := a.Client.GetClient().CoreV1().Events(a.Namespace).List(a.Context,
+			metav1.ListOptions{
+				FieldSelector: "involvedObject.name=" + ep.Name,
+			})
+
+		if err != nil {
+			return nil, err
+		}
+		for _, event := range events.Items {
+			if event.Type != "Normal" {
+				failures = append(failures, common.Failure{
+					Text: fmt.Sprintf("Service %s/%s has event %s", ep.Namespace, ep.Name, event.Message),
+				})
+			}
+		}
 		if len(failures) > 0 {
 			preAnalysis[fmt.Sprintf("%s/%s", ep.Namespace, ep.Name)] = common.PreAnalysis{
 				Endpoint:       ep,
@@ -101,8 +143,10 @@ func (ServiceAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 			Error: value.FailureDetails,
 		}
 
-		parent, _ := util.GetParent(a.Client, value.Endpoint.ObjectMeta)
-		currentAnalysis.ParentObject = parent
+		parent, found := util.GetParent(a.Client, value.Endpoint.ObjectMeta)
+		if found {
+			currentAnalysis.ParentObject = parent
+		}
 		a.Results = append(a.Results, currentAnalysis)
 	}
 	return a.Results, nil

@@ -32,21 +32,27 @@ var (
 )
 
 var coreAnalyzerMap = map[string]common.IAnalyzer{
-	"Pod":                   PodAnalyzer{},
-	"Deployment":            DeploymentAnalyzer{},
-	"ReplicaSet":            ReplicaSetAnalyzer{},
-	"PersistentVolumeClaim": PvcAnalyzer{},
-	"Service":               ServiceAnalyzer{},
-	"Ingress":               IngressAnalyzer{},
-	"StatefulSet":           StatefulSetAnalyzer{},
-	"CronJob":               CronJobAnalyzer{},
-	"Node":                  NodeAnalyzer{},
+	"Pod":                            PodAnalyzer{},
+	"Deployment":                     DeploymentAnalyzer{},
+	"ReplicaSet":                     ReplicaSetAnalyzer{},
+	"PersistentVolumeClaim":          PvcAnalyzer{},
+	"Service":                        ServiceAnalyzer{},
+	"Ingress":                        IngressAnalyzer{},
+	"StatefulSet":                    StatefulSetAnalyzer{},
+	"CronJob":                        CronJobAnalyzer{},
+	"Node":                           NodeAnalyzer{},
+	"ValidatingWebhookConfiguration": ValidatingWebhookAnalyzer{},
+	"MutatingWebhookConfiguration":   MutatingWebhookAnalyzer{},
 }
 
 var additionalAnalyzerMap = map[string]common.IAnalyzer{
 	"HorizontalPodAutoScaler": HpaAnalyzer{},
 	"PodDisruptionBudget":     PdbAnalyzer{},
 	"NetworkPolicy":           NetworkPolicyAnalyzer{},
+	"Log":                     LogAnalyzer{},
+	"GatewayClass":            GatewayClassAnalyzer{},
+	"Gateway":                 GatewayAnalyzer{},
+	"HTTPRoute":               HTTPRouteAnalyzer{},
 }
 
 func ListFilters() ([]string, []string, []string) {
@@ -71,25 +77,27 @@ func ListFilters() ([]string, []string, []string) {
 				fmt.Println(color.RedString(err.Error()))
 				os.Exit(1)
 			}
-			integrationAnalyzers = append(integrationAnalyzers, in.GetAnalyzerName())
+			integrationAnalyzers = append(integrationAnalyzers, in.GetAnalyzerName()...)
 		}
 	}
 
 	return coreKeys, additionalKeys, integrationAnalyzers
 }
 
-func GetAnalyzerMap() map[string]common.IAnalyzer {
+func GetAnalyzerMap() (map[string]common.IAnalyzer, map[string]common.IAnalyzer) {
 
-	mergedMap := make(map[string]common.IAnalyzer)
+	coreAnalyzer := make(map[string]common.IAnalyzer)
+	mergedAnalyzerMap := make(map[string]common.IAnalyzer)
 
 	// add core analyzer
 	for key, value := range coreAnalyzerMap {
-		mergedMap[key] = value
+		coreAnalyzer[key] = value
+		mergedAnalyzerMap[key] = value
 	}
 
 	// add additional analyzer
 	for key, value := range additionalAnalyzerMap {
-		mergedMap[key] = value
+		mergedAnalyzerMap[key] = value
 	}
 
 	integrationProvider := integration.NewIntegration()
@@ -106,9 +114,9 @@ func GetAnalyzerMap() map[string]common.IAnalyzer {
 				fmt.Println(color.RedString(err.Error()))
 				os.Exit(1)
 			}
-			in.AddAnalyzer(&mergedMap)
+			in.AddAnalyzer(&mergedAnalyzerMap)
 		}
 	}
 
-	return mergedMap
+	return coreAnalyzer, mergedAnalyzerMap
 }

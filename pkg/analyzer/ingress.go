@@ -17,8 +17,10 @@ import (
 	"fmt"
 
 	"github.com/k8sgpt-ai/k8sgpt/pkg/common"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/kubernetes"
 	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type IngressAnalyzer struct{}
@@ -26,12 +28,20 @@ type IngressAnalyzer struct{}
 func (IngressAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 	kind := "Ingress"
+	apiDoc := kubernetes.K8sApiReference{
+		Kind: kind,
+		ApiVersion: schema.GroupVersion{
+			Group:   "networking",
+			Version: "v1",
+		},
+		OpenapiSchema: a.OpenapiSchema,
+	}
 
 	AnalyzerErrorsMetric.DeletePartialMatch(map[string]string{
 		"analyzer_name": kind,
 	})
 
-	list, err := a.Client.GetClient().NetworkingV1().Ingresses(a.Namespace).List(a.Context, metav1.ListOptions{})
+	list, err := a.Client.GetClient().NetworkingV1().Ingresses(a.Namespace).List(a.Context, metav1.ListOptions{LabelSelector: a.LabelSelector})
 	if err != nil {
 		return nil, err
 	}
@@ -46,8 +56,11 @@ func (IngressAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 		if ingressClassName == nil {
 			ingClassValue := ing.Annotations["kubernetes.io/ingress.class"]
 			if ingClassValue == "" {
+				doc := apiDoc.GetApiDocV2("spec.ingressClassName")
+
 				failures = append(failures, common.Failure{
-					Text: fmt.Sprintf("Ingress %s/%s does not specify an Ingress class.", ing.Namespace, ing.Name),
+					Text:          fmt.Sprintf("Ingress %s/%s does not specify an Ingress class.", ing.Namespace, ing.Name),
+					KubernetesDoc: doc,
 					Sensitive: []common.Sensitive{
 						{
 							Unmasked: ing.Namespace,
@@ -68,8 +81,11 @@ func (IngressAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 		if ingressClassName != nil {
 			_, err := a.Client.GetClient().NetworkingV1().IngressClasses().Get(a.Context, *ingressClassName, metav1.GetOptions{})
 			if err != nil {
+				doc := apiDoc.GetApiDocV2("spec.ingressClassName")
+
 				failures = append(failures, common.Failure{
-					Text: fmt.Sprintf("Ingress uses the ingress class %s which does not exist.", *ingressClassName),
+					Text:          fmt.Sprintf("Ingress uses the ingress class %s which does not exist.", *ingressClassName),
+					KubernetesDoc: doc,
 					Sensitive: []common.Sensitive{
 						{
 							Unmasked: *ingressClassName,
@@ -82,23 +98,28 @@ func (IngressAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 		// loop over rules
 		for _, rule := range ing.Spec.Rules {
-			// loop over paths
-			for _, path := range rule.HTTP.Paths {
-				_, err := a.Client.GetClient().CoreV1().Services(ing.Namespace).Get(a.Context, path.Backend.Service.Name, metav1.GetOptions{})
-				if err != nil {
-					failures = append(failures, common.Failure{
-						Text: fmt.Sprintf("Ingress uses the service %s/%s which does not exist.", ing.Namespace, path.Backend.Service.Name),
-						Sensitive: []common.Sensitive{
-							{
-								Unmasked: ing.Namespace,
-								Masked:   util.MaskString(ing.Namespace),
+			// loop over HTTP paths
+			if rule.HTTP != nil {
+				for _, path := range rule.HTTP.Paths {
+					_, err := a.Client.GetClient().CoreV1().Services(ing.Namespace).Get(a.Context, path.Backend.Service.Name, metav1.GetOptions{})
+					if err != nil {
+						doc := apiDoc.GetApiDocV2("spec.rules.http.paths.backend.service")
+
+						failures = append(failures, common.Failure{
+							Text:          fmt.Sprintf("Ingress uses the service %s/%s which does not exist.", ing.Namespace, path.Backend.Service.Name),
+							KubernetesDoc: doc,
+							Sensitive: []common.Sensitive{
+								{
+									Unmasked: ing.Namespace,
+									Masked:   util.MaskString(ing.Namespace),
+								},
+								{
+									Unmasked: path.Backend.Service.Name,
+									Masked:   util.MaskString(path.Backend.Service.Name),
+								},
 							},
-							{
-								Unmasked: path.Backend.Service.Name,
-								Masked:   util.MaskString(path.Backend.Service.Name),
-							},
-						},
-					})
+						})
+					}
 				}
 			}
 		}
@@ -106,8 +127,11 @@ func (IngressAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 		for _, tls := range ing.Spec.TLS {
 			_, err := a.Client.GetClient().CoreV1().Secrets(ing.Namespace).Get(a.Context, tls.SecretName, metav1.GetOptions{})
 			if err != nil {
+				doc := apiDoc.GetApiDocV2("spec.tls.secretName")
+
 				failures = append(failures, common.Failure{
-					Text: fmt.Sprintf("Ingress uses the secret %s/%s as a TLS certificate which does not exist.", ing.Namespace, tls.SecretName),
+					Text:          fmt.Sprintf("Ingress uses the secret %s/%s as a TLS certificate which does not exist.", ing.Namespace, tls.SecretName),
+					KubernetesDoc: doc,
 					Sensitive: []common.Sensitive{
 						{
 							Unmasked: ing.Namespace,
@@ -139,8 +163,10 @@ func (IngressAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 			Error: value.FailureDetails,
 		}
 
-		parent, _ := util.GetParent(a.Client, value.Ingress.ObjectMeta)
-		currentAnalysis.ParentObject = parent
+		parent, found := util.GetParent(a.Client, value.Ingress.ObjectMeta)
+		if found {
+			currentAnalysis.ParentObject = parent
+		}
 		a.Results = append(a.Results, currentAnalysis)
 	}
 

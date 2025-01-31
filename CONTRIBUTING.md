@@ -17,7 +17,7 @@ We're happy that you want to contribute to this project. Please read the section
 - We are also happy to help you find something to work on. Just reach out to us.
 
 **Getting in touch with the community**
-* Join our [#k8sgpt slack channel](https://slack.cloud-native.io/channels/k8sgpt)
+* Join our [#k8sgpt slack channel](https://join.slack.com/t/k8sgpt/shared_invite/zt-1rwe5fpzq-VNtJK8DmYbbm~iWL1H34nw)
 * Introduce yourself on the slack channel or open an issue to let us know that you are interested in contributing
 
 **Discuss issues**
@@ -30,7 +30,7 @@ We're happy that you want to contribute to this project. Please read the section
 - Assign yourself to the issue, if you are working on it (if you are not a member of the organization, please leave a comment on the issue)
 - Make your changes
 - Keep pull requests small and focused, if you have multiple changes, please open multiple PRs
-- Create a pull request back to the upstream repository and follow follow the [pull request template](.github/pull_request_template.md) guidelines.
+- Create a pull request back to the upstream repository and follow the [pull request template](.github/pull_request_template.md) guidelines.
 - Wait for a review and address any comments
 
 **Opening PRs**

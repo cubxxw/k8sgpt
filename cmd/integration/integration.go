@@ -25,14 +25,14 @@ var (
 var IntegrationCmd = &cobra.Command{
 	Use:     "integration",
 	Aliases: []string{"integrations"},
-	Short:   "Intergrate another tool into K8sGPT",
-	Long: `Intergrate another tool into K8sGPT. For example:
+	Short:   "Integrate another tool into K8sGPT",
+	Long: `Integrate another tool into K8sGPT. For example:
 	
 	k8sgpt integration activate trivy
 	
 	This would allow you to deploy trivy into your cluster and use a K8sGPT analyzer to parse trivy results.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		_ = cmd.Help()
 	},
 }
 

@@ -17,8 +17,11 @@ import (
 	"fmt"
 
 	"github.com/k8sgpt-ai/k8sgpt/pkg/common"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/kubernetes"
 	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type StatefulSetAnalyzer struct{}
@@ -26,12 +29,20 @@ type StatefulSetAnalyzer struct{}
 func (StatefulSetAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 	kind := "StatefulSet"
+	apiDoc := kubernetes.K8sApiReference{
+		Kind: kind,
+		ApiVersion: schema.GroupVersion{
+			Group:   "apps",
+			Version: "v1",
+		},
+		OpenapiSchema: a.OpenapiSchema,
+	}
 
 	AnalyzerErrorsMetric.DeletePartialMatch(map[string]string{
 		"analyzer_name": kind,
 	})
 
-	list, err := a.Client.GetClient().AppsV1().StatefulSets(a.Namespace).List(a.Context, metav1.ListOptions{})
+	list, err := a.Client.GetClient().AppsV1().StatefulSets(a.Namespace).List(a.Context, metav1.ListOptions{LabelSelector: a.LabelSelector})
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +55,15 @@ func (StatefulSetAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 		serviceName := sts.Spec.ServiceName
 		_, err := a.Client.GetClient().CoreV1().Services(sts.Namespace).Get(a.Context, serviceName, metav1.GetOptions{})
 		if err != nil {
+			doc := apiDoc.GetApiDocV2("spec.serviceName")
+
 			failures = append(failures, common.Failure{
-				Text: fmt.Sprintf("StatefulSet uses the service %s/%s which does not exist.", sts.Namespace, serviceName),
+				Text: fmt.Sprintf(
+					"StatefulSet uses the service %s/%s which does not exist.",
+					sts.Namespace,
+					serviceName,
+				),
+				KubernetesDoc: doc,
 				Sensitive: []common.Sensitive{
 					{
 						Unmasked: sts.Namespace,
@@ -76,6 +94,41 @@ func (StatefulSetAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 				}
 			}
 		}
+		if sts.Spec.Replicas != nil && *(sts.Spec.Replicas) != sts.Status.AvailableReplicas {
+			for i := int32(0); i < *(sts.Spec.Replicas); i++ {
+				podName := sts.Name + "-" + fmt.Sprint(i)
+				pod, err := a.Client.GetClient().CoreV1().Pods(sts.Namespace).Get(a.Context, podName, metav1.GetOptions{})
+				if err != nil {
+					if errors.IsNotFound(err) && i == 0 {
+						evt, err := util.FetchLatestEvent(a.Context, a.Client, sts.Namespace, sts.Name)
+						if err != nil || evt == nil || evt.Type == "Normal" {
+							break
+						}
+						failures = append(failures, common.Failure{
+							Text:      evt.Message,
+							Sensitive: []common.Sensitive{},
+						})
+					}
+					break
+				}
+				if pod.Status.Phase != "Running" {
+					failures = append(failures, common.Failure{
+						Text: fmt.Sprintf("Statefulset pod %s in the namespace %s is not in running state.", pod.Name, pod.Namespace),
+						Sensitive: []common.Sensitive{
+							{
+								Unmasked: sts.Namespace,
+								Masked:   util.MaskString(pod.Name),
+							},
+							{
+								Unmasked: serviceName,
+								Masked:   util.MaskString(pod.Namespace),
+							},
+						},
+					})
+					break
+				}
+			}
+		}
 		if len(failures) > 0 {
 			preAnalysis[fmt.Sprintf("%s/%s", sts.Namespace, sts.Name)] = common.PreAnalysis{
 				StatefulSet:    sts,
@@ -92,8 +145,10 @@ func (StatefulSetAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 			Error: value.FailureDetails,
 		}
 
-		parent, _ := util.GetParent(a.Client, value.StatefulSet.ObjectMeta)
-		currentAnalysis.ParentObject = parent
+		parent, found := util.GetParent(a.Client, value.StatefulSet.ObjectMeta)
+		if found {
+			currentAnalysis.ParentObject = parent
+		}
 		a.Results = append(a.Results, currentAnalysis)
 	}
 

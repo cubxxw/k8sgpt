@@ -42,8 +42,10 @@ func (a *Analysis) jsonOutput() ([]byte, error) {
 	}
 
 	result := JsonOutput{
+		Provider: a.AnalysisAIProvider,
 		Problems: problems,
 		Results:  a.Results,
+		Errors:   a.Errors,
 		Status:   status,
 	}
 	output, err := json.MarshalIndent(result, "", "  ")
@@ -53,18 +55,50 @@ func (a *Analysis) jsonOutput() ([]byte, error) {
 	return output, nil
 }
 
+func (a *Analysis) PrintStats() []byte {
+	var output strings.Builder
+
+	output.WriteString(color.YellowString("The stats mode allows for debugging and understanding the time taken by an analysis by displaying the statistics of each analyzer.\n"))
+
+	for _, stat := range a.Stats {
+		output.WriteString(fmt.Sprintf("- Analyzer %s took %s \n", color.YellowString(stat.Analyzer), stat.DurationTime))
+	}
+
+	return []byte(output.String())
+}
+
 func (a *Analysis) textOutput() ([]byte, error) {
 	var output strings.Builder
+
+	// Print the AI provider used for this analysis (if explain was enabled).
+	if a.Explain {
+		output.WriteString(fmt.Sprintf("AI Provider: %s\n", color.YellowString(a.AnalysisAIProvider)))
+	} else {
+		output.WriteString(fmt.Sprintf("AI Provider: %s\n", color.YellowString("AI not used; --explain not set")))
+	}
+
+	if len(a.Errors) != 0 {
+		output.WriteString("\n")
+		output.WriteString(color.YellowString("Warnings : \n"))
+		for _, aerror := range a.Errors {
+			output.WriteString(fmt.Sprintf("- %s\n", color.YellowString(aerror)))
+		}
+	}
 	output.WriteString("\n")
 	if len(a.Results) == 0 {
 		output.WriteString(color.GreenString("No problems detected\n"))
 		return []byte(output.String()), nil
 	}
 	for n, result := range a.Results {
-		output.WriteString(fmt.Sprintf("%s %s(%s)\n", color.CyanString("%d", n),
-			color.YellowString(result.Name), color.CyanString(result.ParentObject)))
+		output.WriteString(fmt.Sprintf("%s: %s %s(%s)\n", color.CyanString("%d", n),
+			color.HiYellowString(result.Kind),
+			color.YellowString(result.Name),
+			color.CyanString(result.ParentObject)))
 		for _, err := range result.Error {
 			output.WriteString(fmt.Sprintf("- %s %s\n", color.RedString("Error:"), color.RedString(err.Text)))
+			if err.KubernetesDoc != "" {
+				output.WriteString(fmt.Sprintf("  %s %s\n", color.RedString("Kubernetes Doc:"), color.RedString(err.KubernetesDoc)))
+			}
 		}
 		output.WriteString(color.GreenString(result.Details + "\n"))
 	}

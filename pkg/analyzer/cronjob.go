@@ -18,9 +18,11 @@ import (
 	"time"
 
 	"github.com/k8sgpt-ai/k8sgpt/pkg/common"
+	"github.com/k8sgpt-ai/k8sgpt/pkg/kubernetes"
 	"github.com/k8sgpt-ai/k8sgpt/pkg/util"
 	cron "github.com/robfig/cron/v3"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type CronJobAnalyzer struct{}
@@ -28,16 +30,22 @@ type CronJobAnalyzer struct{}
 func (analyzer CronJobAnalyzer) Analyze(a common.Analyzer) ([]common.Result, error) {
 
 	kind := "CronJob"
+	apiDoc := kubernetes.K8sApiReference{
+		Kind: kind,
+		ApiVersion: schema.GroupVersion{
+			Group:   "batch",
+			Version: "v1",
+		},
+		OpenapiSchema: a.OpenapiSchema,
+	}
 
 	AnalyzerErrorsMetric.DeletePartialMatch(map[string]string{
 		"analyzer_name": kind,
 	})
 
-	var results []common.Result
-
-	cronJobList, err := a.Client.GetClient().BatchV1().CronJobs(a.Namespace).List(a.Context, v1.ListOptions{})
+	cronJobList, err := a.Client.GetClient().BatchV1().CronJobs(a.Namespace).List(a.Context, v1.ListOptions{LabelSelector: a.LabelSelector})
 	if err != nil {
-		return results, err
+		return nil, err
 	}
 
 	var preAnalysis = map[string]common.PreAnalysis{}
@@ -45,8 +53,11 @@ func (analyzer CronJobAnalyzer) Analyze(a common.Analyzer) ([]common.Result, err
 	for _, cronJob := range cronJobList.Items {
 		var failures []common.Failure
 		if cronJob.Spec.Suspend != nil && *cronJob.Spec.Suspend {
+			doc := apiDoc.GetApiDocV2("spec.suspend")
+
 			failures = append(failures, common.Failure{
-				Text: fmt.Sprintf("CronJob %s is suspended", cronJob.Name),
+				Text:          fmt.Sprintf("CronJob %s is suspended", cronJob.Name),
+				KubernetesDoc: doc,
 				Sensitive: []common.Sensitive{
 					{
 						Unmasked: cronJob.Namespace,
@@ -61,8 +72,11 @@ func (analyzer CronJobAnalyzer) Analyze(a common.Analyzer) ([]common.Result, err
 		} else {
 			// check the schedule format
 			if _, err := CheckCronScheduleIsValid(cronJob.Spec.Schedule); err != nil {
+				doc := apiDoc.GetApiDocV2("spec.schedule")
+
 				failures = append(failures, common.Failure{
-					Text: fmt.Sprintf("CronJob %s has an invalid schedule: %s", cronJob.Name, err.Error()),
+					Text:          fmt.Sprintf("CronJob %s has an invalid schedule: %s", cronJob.Name, err.Error()),
+					KubernetesDoc: doc,
 					Sensitive: []common.Sensitive{
 						{
 							Unmasked: cronJob.Namespace,
@@ -80,9 +94,11 @@ func (analyzer CronJobAnalyzer) Analyze(a common.Analyzer) ([]common.Result, err
 			if cronJob.Spec.StartingDeadlineSeconds != nil {
 				deadline := time.Duration(*cronJob.Spec.StartingDeadlineSeconds) * time.Second
 				if deadline < 0 {
+					doc := apiDoc.GetApiDocV2("spec.startingDeadlineSeconds")
 
 					failures = append(failures, common.Failure{
-						Text: fmt.Sprintf("CronJob %s has a negative starting deadline", cronJob.Name),
+						Text:          fmt.Sprintf("CronJob %s has a negative starting deadline", cronJob.Name),
+						KubernetesDoc: doc,
 						Sensitive: []common.Sensitive{
 							{
 								Unmasked: cronJob.Namespace,
@@ -107,15 +123,15 @@ func (analyzer CronJobAnalyzer) Analyze(a common.Analyzer) ([]common.Result, err
 			AnalyzerErrorsMetric.WithLabelValues(kind, cronJob.Name, cronJob.Namespace).Set(float64(len(failures)))
 
 		}
+	}
 
-		for key, value := range preAnalysis {
-			currentAnalysis := common.Result{
-				Kind:  kind,
-				Name:  key,
-				Error: value.FailureDetails,
-			}
-			a.Results = append(results, currentAnalysis)
+	for key, value := range preAnalysis {
+		currentAnalysis := common.Result{
+			Kind:  kind,
+			Name:  key,
+			Error: value.FailureDetails,
 		}
+		a.Results = append(a.Results, currentAnalysis)
 	}
 
 	return a.Results, nil
